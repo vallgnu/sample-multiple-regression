@@ -1,25 +1,25 @@
-import pathlib
 import glob
 
 import pandas as pd
 import matplotlib.pyplot as plt
 
 import tensorflow as tf
+
 from tensorflow import keras
-from tensorflow.keras.layers import Dense
 from tensorflow.keras import layers
 
 print(tf.__version__)
 
-
-dataset_path = glob.glob("")
+dataset_path = glob.glob("./data/*")
 dataset_path
-
 
 raw_dframe = pd.read_csv(dataset_path[0])
 
+min_ch_no = raw_dframe[raw_dframe.columns[3]][0]
+max_ch_no = raw_dframe[raw_dframe.columns[4]][0]
+
 dataset = raw_dframe.copy()
-drop_col = ['time', 'e_thick', 'd_thick', 'min_ch_no', 'max_ch_no', 'coil_no', 'grade_no', 'total_pass_no']
+drop_col = ['time', 'e_thick', 'd_thick', 'min_ch_no', 'max_ch_no', 'coil_no', 'grade_no', 'total_pass_no', 'ave_spvr', 'for_learn_ave_spvr']
 
 #削除する列名
 for i in range(30):
@@ -32,270 +32,140 @@ for i in range(50):
     drop_col.append(col_name)
 
 dataset.drop(drop_col, axis=1, inplace=True)
-#dataset.to_csv('./test.csv')
+dataset.to_csv('./test.csv')
 dataset.head()
 
+train_dataset = dataset.sample(frac=0.9, random_state=0)
+test_dataset = dataset.drop(train_dataset.index)
 
-test_dataset = dataset.sample(frac=0.1, random_state=0)
-dataset = dataset.drop(test_dataset.index)
-val_dataset = dataset.sample(frac=0.1, random_state=0)
-train_dataset = dataset.drop(val_dataset.index)
-
+#削除する列名
+pop_col = []
+for i in range(min_ch_no, max_ch_no+1):
+    col_name = "for_learn_spvr[" + str(i) + "]"
+    pop_col.append(col_name)
 
 train_stats = train_dataset.describe()
-train_stats.pop("ave_spvr")
+for i in pop_col:
+    train_stats.pop(i)
 train_stats = train_stats.transpose()
 print(train_stats)
 
+train_labels = []
+test_labels = []
 
-name = train_dataset.columns[26]
-#print(name)
+for i in pop_col:
+    train_labels.append(train_dataset.pop(i))
+    test_labels.append(test_dataset.pop(i))
 
-train_labels = train_dataset.pop(name)
-val_labels = val_dataset.pop(name)
-test_labels = test_dataset.pop(name)
-print(train_labels)
+train_labels = pd.DataFrame(train_labels).transpose()
+test_labels = pd.DataFrame(test_labels).transpose()
 
+train_labels_dict = {}
+test_labels_dict = {}
+for i, j in enumerate(pop_col):
+    dic_col_name = "spvr_ch" + str(i+6)
+    train_labels_dict[dic_col_name] = pd.DataFrame(train_labels[j])
+    test_labels_dict[dic_col_name] = pd.DataFrame(test_labels[j])
 
 def norm(x):
     return (x - train_stats['mean']) / train_stats['std']
 
 normed_train_data = norm(train_dataset)
-normed_val_data = norm(val_dataset)
 normed_test_data = norm(test_dataset)
 
 normed_train_data = normed_train_data.dropna(how='all', axis=1)
-normed_val_data = normed_val_data.dropna(how='all', axis=1)
 normed_test_data = normed_test_data.dropna(how='all', axis=1)
 
-
-normed_train_data.describe()
-
-
-x_train_f32 = normed_train_data.astype('float32')
-y_train_f32 = train_labels.astype('float32')
-x_val_f32 = normed_val_data.astype('float32')
-y_val_f32 = val_labels.astype('float32')
-x_test_f32 = normed_test_data.astype('float32')
-y_test_f32 = test_labels.astype('float32')
-
-
-train_sliced = tf.data.Dataset.from_tensor_slices((x_train_f32, y_train_f32))
-val_sliced = tf.data.Dataset.from_tensor_slices((x_val_f32, y_val_f32))
-
-train_dataset = train_sliced.shuffle(250).batch(50)
-val_dataset = val_sliced.batch(50)
-
-
-activation1 = layers.Activation('relu', name='activation1')
-activation2 = layers.Activation('relu', name='activation2')
-acti_out = layers.Activation('relu', name='acti_out')
-
-class build_model(tf.keras.Model):
-    def __init__(self, *args, **kwargs):
-        super(build_model, self).__init__(*args, **kwargs)
-
-        self.layer_1 = layers.Dense(name='layer1', units=64)
-        self.layer_2 = layers.Dense(name='layer2', units=64)
-        self.layer_out = layers.Dense(name='layer_out', units=1)
-
-    def call(self, inputs, training=None):
-        x1 = activation1(self.layer_1(inputs))
-        x2 = activation2(self.layer_2(x1))
-        outputs = acti_out(self.layer_out(x2))
-        return outputs
-
-model = build_model(name="multiple_regression")
-print(model)
-
-
-model1 = build_model(name='subclassing_model1')
-model1.build(input_shape=(None, 36))
-model1.summary()
-
-"""tf.keras.utils.plot_model(model1, show_shapes=True, show_layer_names=True,
-                         to_file='model_png')
-from IPython.display import Image
-Image(retina=False, filename='model.png')"""
-
-
-import tensorflow.keras.backend as K
-
-# カスタムの評価関数を実装（TensorFlow低水準API利用）
-# （tf.keras.metrics.binary_accuracy()の代わり）
-def tanh_accuracy(y_true, y_pred):           # y_trueは正解、y_predは予測（出力）
-    threshold = K.cast(0.0, y_pred.dtype)              # -1か1かを分ける閾値を作成
-    y_pred = K.cast(y_pred >= threshold, y_pred.dtype) # 閾値未満で0、以上で1に変換
-    # 2倍して-1.0することで、0／1を-1.0／1.0にスケール変換して正解率を計算
-    return K.mean(K.equal(y_true, y_pred * 2 - 1.0), axis=-1)
-
-# カスタムの評価関数クラスを実装（サブクラス化）
-# （tf.keras.metrics.BinaryAccuracy()の代わり）
-class TanhAccuracy(tf.keras.metrics.Mean):
-    def __init__(self, name='tanh_accuracy', dtype=None):
-        super(TanhAccuracy, self).__init__(name, dtype)
-
-    # 正解率の状態を更新する際に呼び出される関数をカスタマイズ
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        matches = tanh_accuracy(y_true, y_pred)
-        return super(TanhAccuracy, self).update_state(
-            matches, sample_weight=sample_weight)
-
-
-# 【初中級者向けとの比較用】学習方法を設定する
-# model.compile(
-#     ……最適化アルゴリズム……,
-#     ……損失関数……,
-#     [tanh_accuracy])   # 評価関数
-
-# ###【エキスパート向け】最適化アルゴリズムを定義する ###
-optimizer = tf.keras.optimizers.SGD(learning_rate=0.03)  # 更新時の学習率
-
-# ###【エキスパート向け】損失関数を定義する ###
-criterion = tf.keras.losses.MeanSquaredError()
-
-# ### 【エキスパート向け】評価関数を定義する ###
-train_loss = tf.keras.metrics.Mean(name='train_loss')
-train_accuracy = TanhAccuracy(name='train_accuracy')
-valid_loss = tf.keras.metrics.Mean(name='valid_loss')
-valid_accuracy = TanhAccuracy(name='valid_accuracy')
-
-
-import tensorflow.keras.backend as K
-
-# ###【エキスパート向け】訓練する（1回分） ###
-@tf.function
-def train_step(train_X, train_y):
-  # 訓練モードに設定
-  training = True
-  K.set_learning_phase(training)  # tf.keras内部にも伝える
-
-  with tf.GradientTape() as tape: # 勾配をテープに記録
-    # フォワードプロパゲーションで出力結果を取得
-    #train_X                                   # 入力データ
-    pred_y = model(train_X, training=training) # 出力結果
-    #train_y                                   # 正解ラベル
-
-    # 出力結果と正解ラベルから損失を計算し、勾配を求める
-    loss = criterion(pred_y, train_y)     # 誤差（出力結果と正解ラベルの差）から損失を取得
-
-  # 逆伝播の処理として勾配を計算（自動微分）
-  gradient = tape.gradient(loss, model.trainable_weights)
-
-  # 勾配を使ってパラメーター（重みとバイアス）を更新
-  optimizer.apply_gradients(zip(gradient, model.trainable_weights)) # 指定されたデータ分の最適化を実施
-
-  # 損失と正解率を算出して保存
-  train_loss(loss)
-  train_accuracy(train_y, pred_y)
-
-# ###【エキスパート向け】精度検証する（1回分） ###
-@tf.function
-def valid_step(valid_X, valid_y):
-  # 評価モードに設定（※dropoutなどの挙動が評価用になる）
-  training = False
-  K.set_learning_phase(training)  # tf.keras内部にも伝える
-
-  # フォワードプロパゲーションで出力結果を取得
-  #valid_X                                   # 入力データ
-  pred_y = model(valid_X, training=training) # 出力結果
-  #valid_y                                   # 正解ラベル
-
-  # 出力結果と正解ラベルから損失を計算
-  loss = criterion(pred_y, valid_y)     # 誤差（出力結果と正解ラベルの差）から損失を取得
-  # ※評価時は勾配を計算しない
-
-  # 損失と正解率を算出して保存
-  valid_loss(loss)
-  valid_accuracy(valid_y, pred_y)
-
-
-  # 【初中級者向けとの比較用】入力データを指定して学習する
-# model.fit(
-#     ……訓練データ（入力）……, ……同（ラベル）……,
-#     ……精度検証データ……,
-#     ……バッチサイズ……,
-#     epochs=100,  # エポック数
-#     verbose=1)   # 実行状況の出力モード
-
-# ###【エキスパート向け】学習する ###
-
-# 定数（学習／評価時に必要となるもの）
-EPOCHS = 100             # エポック数： 100
-
-# 損失の履歴を保存するための変数
-train_history = []
-valid_history = []
-
-for epoch in range(EPOCHS):
-  # エポックのたびに、メトリクスの値をリセット
-  train_loss.reset_states()      # 「訓練」時における累計「損失値」
-  train_accuracy.reset_states()  # 「訓練」時における累計「正解率」
-  valid_loss.reset_states()      # 「評価」時における累計「損失値」
-  valid_accuracy.reset_states()  # 「評価」時における累計「正解率」
-
-  for train_X, train_y in train_dataset:
-    # 【重要】1ミニバッチ分の「訓練（学習）」を実行
-    train_step(train_X, train_y)
-
-  for valid_X, valid_y in val_dataset:
-    # 【重要】1ミニバッチ分の「評価（精度検証）」を実行
-    valid_step(valid_X, valid_y)
-
-  # ミニバッチ単位で累計してきた損失値や正解率の平均を取る
-  n = epoch + 1                          # 処理済みのエポック数
-  avg_loss = train_loss.result()         # 訓練用の平均損失値
-  avg_acc = train_accuracy.result()      # 訓練用の平均正解率
-  avg_val_loss = valid_loss.result()     # 訓練用の平均損失値
-  avg_val_acc = valid_accuracy.result()  # 訓練用の平均正解率
-
-  # グラフ描画のために損失の履歴を保存する
-  train_history.append(avg_loss)
-  valid_history.append(avg_val_loss)
-
-  # 損失や正解率などの情報を表示
-  print(f'[Epoch {n:3d}/{EPOCHS:3d}]' \
-        f' loss: {avg_loss:.5f}, acc: {avg_acc:.5f}' \
-        f' val_loss: {avg_val_loss:.5f}, val_acc: {avg_val_acc:.5f}')
-
-print('Finished Training')
-print(model.get_weights())  # 学習後のパラメーターの情報を表示
-
-
-for train_X, train_y in train_dataset:
-    print(train_X)
-    print(train_y)
-
-
-for val_X, val_y in val_dataset:
-    print(val_X)
-    print(val_y)
-
-
-test_sliced = tf.data.Dataset.from_tensor_slices((x_test_f32, y_test_f32))
-
-for test_X, test_y in test_sliced:
-    print(test_X)
-    print(test_y)
-
-
-test_dataset = test_sliced.batch(1)
-#test_dataset = test_sliced
-
-for test_X, test_y in test_dataset:
-    print(test_X)
-    print(test_y)
-
-
-record_predict = []
-record_correct = []
-
-for test_X, test_y in test_dataset:
-    test_pre = model(test_X, training=False)
-    record_predict.append(test_pre)
-    record_correct.append(test_y)
-
-print(record_predict)
-
-
-record_predict[0] - record_correct[0]
+#活性化関数作成
+activation_list = []
+for i in range(min_ch_no, max_ch_no+1):
+    pre_activation_list = []
+    for j in range(2):
+        acti_name = "activation_ch" + str(i) + "_" + str(j)
+        pre_activation_list.append(layers.Activation('relu', name=acti_name))
+    activation_list.append(pre_activation_list)
+
+#出力層の活性化関数
+acti_out_list = []
+for i in range(min_ch_no, max_ch_no+1):
+    acti_out_name = "spvr_ch" + str(i)
+    acti_out_list.append(layers.Activation('linear', name=acti_out_name))
+
+#入力層の作成
+inputs = layers.Input(name='layer_in', shape=(len(normed_train_data.keys()),))
+
+#各CHの中間層(1層目)
+layer1_list = []
+for i in range(min_ch_no, max_ch_no+1):
+    layer1_name = "layer1_ch" + str(i)
+    layer1_list.append(layers.Dense(name=layer1_name, units=32))
+
+#各CHの中間層(2層目)
+layer2_list = []
+for i in range(min_ch_no, max_ch_no+1):
+    layer2_name = "layer2_ch" + str(i)
+    layer2_list.append(layers.Dense(name=layer2_name, units=32))
+
+#各CHの出力層
+layer_out_list = []
+for i in range(min_ch_no, max_ch_no+1):
+    layer_out_name = "layer_out_ch" + str(i)
+    layer_out_list.append(layers.Dense(name=layer_out_name, units=1))
+
+#forward propagation
+x1_list = []
+x2_list = []
+outputs_list = []
+for i in range(max_ch_no-min_ch_no+1):
+    x1_list.append(activation_list[i][0](layer1_list[i](inputs)))
+    x2_list.append(activation_list[i][1](layer2_list[i](x1_list[i])))
+    outputs_list.append(acti_out_list[i](layer_out_list[i](x2_list[i])))
+
+model = tf.keras.Model(inputs=inputs, outputs=outputs_list)
+
+model.compile(loss='mse', optimizer='adam', metrics=['mae', 'mse'])
+
+model.summary()
+
+def plot_history(history):
+  hist = pd.DataFrame(history.history)
+  hist['epoch'] = history.epoch
+
+  plt.figure()
+  plt.xlabel('Epoch')
+  plt.ylabel('Mean Abs Error [MPG]')
+  plt.plot(hist['epoch'], hist['mae'],
+           label='Train Error')
+  plt.plot(hist['epoch'], hist['val_mae'],
+           label = 'Val Error')
+  #plt.ylim([0,5])
+  plt.legend()
+
+  plt.figure()
+  plt.xlabel('Epoch')
+  plt.ylabel('Mean Square Error [$MPG^2$]')
+  plt.plot(hist['epoch'], hist['mse'],
+           label='Train Error')
+  plt.plot(hist['epoch'], hist['val_mse'],
+           label = 'Val Error')
+  #plt.ylim([0,20])
+  plt.legend()
+  plt.show()
+
+
+#plot_history(history)
+EPOCHS = 100
+BATCH_SIZE = 32
+
+# patience は改善が見られるかを監視するエポック数を表すパラメーター
+early_stop = keras.callbacks.EarlyStopping(monitor='val_loss', patience=20)
+
+history = model.fit(x={'layer_in':normed_train_data},
+                    y=train_labels_dict,
+                    batch_size=BATCH_SIZE,
+                    epochs=EPOCHS,
+                    validation_split = 0.1,
+                    verbose=1,
+                    callbacks=[early_stop])
+
+#plot_history(history)
